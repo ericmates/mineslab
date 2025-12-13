@@ -3,3 +3,4 @@ numpy
 pymatgen
 stmol
 py3Dmol
+ipython_genutils
