@@ -1,10 +1,10 @@
 import streamlit as st
-import sys
-import copy
+import streamlit.components.v1 as components
 import numpy as np
-import itertools
 import io
 import zipfile
+import base64
+import itertools
 import ast
 from collections import Counter, defaultdict
 
@@ -14,37 +14,74 @@ from pymatgen.core.surface import Slab, SlabGenerator, get_symmetrically_distinc
 from pymatgen.io.cif import CifWriter
 
 # =============================================================================
-# CORE LOGIC (ChemicalAnalyzer & SlabProcessor)
-# [Kept identical to your original robust logic]
+# 1. VISUALIZATION ENGINE (NGL.js)
 # =============================================================================
 
-from stmol import showmol
-import py3Dmol
-
-def visualize_structure(structure, title="Structure"):
+def visualize_with_ngl(structure, height=400, width="100%", unique_id="ngl_viewer"):
     """
-    Generates a 3D view of the structure using py3Dmol and stmol.
+    Embeds an interactive NGL.js 3D viewer into Streamlit using HTML components.
     """
     # 1. Convert Pymatgen Structure to CIF string
-    # (CIF is better than XYZ for crystals because it keeps the unit cell)
     cif_str = str(CifWriter(structure))
+    
+    # 2. Encode to Base64 to prevent special character issues in HTML/JS
+    b64_str = base64.b64encode(cif_str.encode()).decode()
 
-    # 2. Create py3Dmol view
-    view = py3Dmol.view(width=500, height=400)
-    view.addModel(cif_str, 'cif')
+    # 3. Generate HTML Code
+    # We use a unique ID for the viewport div to avoid conflicts if needed, 
+    # though Streamlit iframes usually isolate them well.
+    html_code = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>NGL Viewer</title>
+      <script src="https://unpkg.com/ngl@2.0.0-dev.37/dist/ngl.js"></script>
+      <style>
+        body {{ margin: 0; padding: 0; overflow: hidden; }}
+        #viewport_{unique_id} {{ width: 100%; height: {height}px; }}
+      </style>
+    </head>
+    <body>
+      <div id="viewport_{unique_id}"></div>
+      <script>
+        document.addEventListener("DOMContentLoaded", function () {{
+          // Create NGL Stage
+          var stage = new NGL.Stage("viewport_{unique_id}", {{backgroundColor: "white"}});
+          
+          // Decode Base64 CIF
+          var stringBlob = new Blob([atob("{b64_str}")], {{type: 'text/plain'}});
+          
+          // Load and Render
+          stage.loadFile(stringBlob, {{ext: "cif", defaultRepresentation: true}})
+            .then(function (component) {{
+              // Add representations
+              component.addRepresentation("ball+stick", {{
+                  aspectRatio: 1.5,
+                  radiusScale: 0.3
+              }});
+              component.addRepresentation("unitcell");
+              
+              // Zoom to fit
+              component.autoView();
+            }});
+            
+          // Handle window resizing
+          window.addEventListener("resize", function(event){{
+              stage.handleResize();
+          }}, true);
+        }});
+      </script>
+    </body>
+    </html>
+    """
     
-    # 3. Style
-    view.setStyle({'sphere': {'colorscheme': 'Jmol', 'scale': 0.3}, 
-                   'stick': {'colorscheme': 'Jmol', 'radius': 0.15}})
-    
-    # 4. Add Unit Cell Box
-    view.addUnitCell()
-    view.zoomTo()
-    
-    # 5. Render in Streamlit
-    # We wrap it in a container to keep it neat
-    st.caption(title)
-    showmol(view, height=400, width=500)
+    # 4. Render component
+    components.html(html_code, height=height)
+
+# =============================================================================
+# 2. CORE LOGIC (ChemicalAnalyzer & SlabProcessor)
+# =============================================================================
 
 class ChemicalAnalyzer:
     def __init__(self, structure):
@@ -219,18 +256,15 @@ def structure_to_slab(structure, ref_slab):
                 ref_slab.shift, ref_slab.scale_factor, site_properties=structure.site_properties)
 
 # =============================================================================
-# STREAMLIT UI
+# 3. STREAMLIT UI
 # =============================================================================
 
 st.set_page_config(page_title="Complex Mineral Surface Generator", layout="wide")
 
 st.title("💎 Complex Mineral Surface Generator")
 st.markdown("""
-This tool generates non-polar, stoichiometric surfaces for complex minerals.
-It handles:
-* **Intercalated Molecules** (H₂O, NH₄, organics) via dual-cutoff graph analysis.
-* **Covalent Scaffolds** (PO₄, SiO₄) by stripping and repairing cuts.
-* **Polarity** by iterative layer removal and symmetric reconstruction.
+This tool generates non-polar, stoichiometric surfaces for complex minerals. 
+It now includes **Interactive 3D Visualization** via NGL.js.
 """)
 
 # --- SIDEBAR: PARAMETERS ---
@@ -256,7 +290,7 @@ with st.sidebar:
         st.info("Indices will be calculated based on bulk symmetry.")
         
     elif mode == "Specific List":
-        st.caption("Enter indices as tuples, e.g., `(1,0,0), (0,1,1), (1,1,1)`")
+        st.caption("Enter indices as tuples, e.g., `(1,0,0), (0,1,1)`")
         indices_str = st.text_area("List of Indices", value="(1,0,0)")
 
     st.header("3. Slab Settings")
@@ -281,7 +315,7 @@ if uploaded_file and generate_btn:
         st.error(f"Error reading CIF: {e}")
         st.stop()
 
-    # 2. Determine Indices (if calculating dynamically)
+    # 2. Determine Indices
     if mode == "Up to Max Index":
         with st.spinner(f"Calculating symmetric indices up to max index {max_h}..."):
             target_indices = get_symmetrically_distinct_miller_indices(bulk, max_h)
@@ -289,17 +323,14 @@ if uploaded_file and generate_btn:
             
     elif mode == "Specific List":
         try:
-            # Safe parsing of string to list of tuples
-            # Wrap in brackets if user forgot them to make it a list/tuple
             parsed = ast.literal_eval(f"[{indices_str}]") if not indices_str.startswith('[') else ast.literal_eval(indices_str)
-            # Flatten if nested or handle list of tuples
             target_indices = []
             for item in parsed:
                 if isinstance(item, (list, tuple)) and len(item) == 3:
                     target_indices.append(tuple(item))
             if not target_indices: raise ValueError
         except:
-            st.error("Invalid format for index list. Use format: `(1,0,0), (1,1,0)`")
+            st.error("Invalid format for index list.")
             st.stop()
 
     # 3. Pre-Analysis
@@ -338,18 +369,13 @@ if uploaded_file and generate_btn:
         progress_bar.progress((idx_i) / total_indices)
         
         try:
-            # Generate Raw Slabs for this specific index
             slabgen = SlabGenerator(bulk, current_hkl, thickness, vacuum, center_slab=True)
             raw_slabs = slabgen.get_slabs()
             
-            # Inner Loop: Process specific cuts for this index
             for raw_slab in raw_slabs:
-                
-                # A. Orthogonalize
                 proc_slab = raw_slab.get_orthogonal_c_slab()
                 raw_an = ChemicalAnalyzer(proc_slab)
                 
-                # B. Candidate Collection
                 cat_cands = [proc_slab[x] for x in raw_an.cations]
                 mol_cands_map = {}
                 for form, units in raw_an.molecules.items():
@@ -357,28 +383,21 @@ if uploaded_file and generate_btn:
                     for u_indices in units:
                         mol_cands_map[form].append([proc_slab[x] for x in u_indices])
                 
-                # C. Strip
                 proc = SlabProcessor(proc_slab.copy(), bulk_an)
                 proc.step_5_strip_to_scaffold()
                 
-                if not proc.local_analysis or not proc.local_analysis.centers:
-                    continue 
+                if not proc.local_analysis or not proc.local_analysis.centers: continue 
                 
-                # D. Depolarize
-                if not proc.step_6_depolarize_scaffold():
-                    continue 
+                if not proc.step_6_depolarize_scaffold(): continue 
                 
                 scaffold = proc.slab
                 center_z = 0.5
-                
-                # E. Add Cations
                 n_centers = len(proc.local_analysis.centers)
                 req_cats = int(round(n_centers * proc.ratio_cation))
                 cat_cands.sort(key=lambda s: abs(s.frac_coords[2] - center_z))
                 
                 if len(cat_cands) < req_cats: continue
                 
-                # Permutations
                 best_base = None
                 current_base = [s for s in scaffold]
                 base_cat = cat_cands[:max(0, req_cats-2)]
@@ -401,7 +420,6 @@ if uploaded_file and generate_btn:
                 
                 if not best_base: continue
                 
-                # F. Add Molecules
                 final_sites = [s for s in best_base]
                 success_mols = True
                 for form, ratio in proc.ratio_mols.items():
@@ -416,14 +434,12 @@ if uploaded_file and generate_btn:
                 
                 if not success_mols: continue
                 
-                # G. Finalize
                 final_struct = Structure(scaffold.lattice, [s.specie for s in final_sites], [s.frac_coords for s in final_sites])
                 final_slab = structure_to_slab(final_struct, proc_slab)
                 final_slabs.append(final_slab)
 
         except Exception as e:
-            # Don't stop everything if one index fails
-            st.warning(f"Warning: Calculation failed for index {current_hkl}: {e}")
+            st.warning(f"Calculation failed for index {current_hkl}: {e}")
             continue
 
     progress_bar.progress(1.0)
@@ -435,12 +451,10 @@ if uploaded_file and generate_btn:
     if len(final_slabs) == 0:
         st.warning("No valid non-polar, stoichiometric surfaces found.")
     
-    # Prepare ZIP download
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w") as zip_file:
         for i, slab in enumerate(final_slabs):
             
-            # Analysis
             an = ChemicalAnalyzer(slab)
             mult = len(slab) / len(bulk)
             dipole_z = slab.dipole[2]
@@ -448,35 +462,29 @@ if uploaded_file and generate_btn:
             thickness_val = np.ptp(slab.cart_coords[:, 2])
             
             hkl_str = "".join(map(str, slab.miller_index))
-            # Unique filename: include index and a counter (since one index might have multiple valid cuts)
             fname = f"slab_{hkl_str}_id{i}.cif"
             
-            # Write to ZIP
             w = CifWriter(slab)
             zip_file.writestr(fname, str(w))
             
-            # UI Card
-            with st.expander(f"Surface ({hkl_str}) | ID: {i} | Polarity: {dipole_z:.6f} eÅ"):
-                col1, col2 = st.columns(2)
+            # === UI CARD WITH NGL ===
+            with st.expander(f"Surface ({hkl_str}) | ID: {i} | Polarity: {dipole_z:.6f} eÅ", expanded=False):
+                col1, col2 = st.columns([1, 1])
+                
                 with col1:
+                    st.markdown("### Metadata")
                     st.write(f"**Filename:** `{fname}`")
                     st.write(f"**Multiplicity:** {mult:.2f}x Bulk")
                     st.write(f"**Thickness:** {thickness_val:.3f} Å")
                     st.write(f"**Symmetry:** {is_sym}")
                     st.write(f"**Dipole Z:** {dipole_z:.6f}")
-                    st.write(f"**Molecules:** {dict([(k, len(v)) for k,v in an.molecules.items()])}")
-           
-                    st.download_button(
-                        label="Download CIF",
-                        data=str(w),
-                        file_name=fname,
-                        mime="chemical/x-cif",
-                        key=f"dl_{i}"
-                    )
-                with col2:
-                    visualize_structure(slab, title=f"3D Preview: {fname}")
+                    st.download_button("Download CIF", str(w), fname, "chemical/x-cif", key=f"dl_{i}")
 
-    # Download Button
+                with col2:
+                    st.markdown("### 3D Visualization")
+                    # CALLING THE NGL VISUALIZER HERE
+                    visualize_with_ngl(slab, unique_id=f"ngl_{i}")
+
     if final_slabs:
         st.download_button(
             label="Download All Surfaces (ZIP)",
