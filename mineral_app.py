@@ -18,6 +18,34 @@ from pymatgen.io.cif import CifWriter
 # [Kept identical to your original robust logic]
 # =============================================================================
 
+from stmol import showmol
+import py3Dmol
+
+def visualize_structure(structure, title="Structure"):
+    """
+    Generates a 3D view of the structure using py3Dmol and stmol.
+    """
+    # 1. Convert Pymatgen Structure to CIF string
+    # (CIF is better than XYZ for crystals because it keeps the unit cell)
+    cif_str = str(CifWriter(structure))
+
+    # 2. Create py3Dmol view
+    view = py3Dmol.view(width=500, height=400)
+    view.addModel(cif_str, 'cif')
+    
+    # 3. Style
+    view.setStyle({'sphere': {'colorscheme': 'Jmol', 'scale': 0.3}, 
+                   'stick': {'colorscheme': 'Jmol', 'radius': 0.15}})
+    
+    # 4. Add Unit Cell Box
+    view.addUnitCell()
+    view.zoomTo()
+    
+    # 5. Render in Streamlit
+    # We wrap it in a container to keep it neat
+    st.caption(title)
+    showmol(view, height=400, width=500)
+
 class ChemicalAnalyzer:
     def __init__(self, structure):
         self.structure = structure
@@ -434,10 +462,19 @@ if uploaded_file and generate_btn:
                     st.write(f"**Filename:** `{fname}`")
                     st.write(f"**Multiplicity:** {mult:.2f}x Bulk")
                     st.write(f"**Thickness:** {thickness_val:.3f} Å")
-                with col2:
                     st.write(f"**Symmetry:** {is_sym}")
                     st.write(f"**Dipole Z:** {dipole_z:.6f}")
                     st.write(f"**Molecules:** {dict([(k, len(v)) for k,v in an.molecules.items()])}")
+           
+                    st.download_button(
+                        label="Download CIF",
+                        data=str(w),
+                        file_name=fname,
+                        mime="chemical/x-cif",
+                        key=f"dl_{i}"
+                    )
+                with col2:
+                    visualize_structure(slab, title=f"3D Preview: {fname}")
 
     # Download Button
     if final_slabs:
