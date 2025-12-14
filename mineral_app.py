@@ -19,21 +19,16 @@ from pymatgen.io.cif import CifWriter
 
 def visualize_with_ngl(structure, height=400, unique_id="ngl_viewer"):
     """
-    Robust NGL.js visualizer that waits for the script to load
-    and ensures the container has dimensions before rendering.
+    Robust NGL.js visualizer with optimized Atom/Bond ratios.
     """
-    # 1. Convert Structure to CIF string
     cif_str = str(CifWriter(structure))
-    # 2. Encode to Base64 to avoid JS string escaping issues
     b64_str = base64.b64encode(cif_str.encode()).decode()
 
-    # 3. HTML Template
     html_code = f"""
     <!DOCTYPE html>
     <html>
     <head>
       <style>
-        /* Force height to prevent 0px rendering */
         #{unique_id} {{ 
             width: 100%; 
             height: {height}px; 
@@ -46,47 +41,44 @@ def visualize_with_ngl(structure, height=400, unique_id="ngl_viewer"):
     </head>
     <body>
       <div id="{unique_id}"></div>
-      
       <script src="https://cdnjs.cloudflare.com/ajax/libs/ngl/2.0.0-dev.37/ngl.js"></script>
-      
       <script>
-        // Wait for window load to ensure NGL is ready
         window.addEventListener('load', function() {{
-            
-            // Safety check
             if (typeof NGL === 'undefined') {{
-                console.error("NGL library failed to load.");
                 document.getElementById('{unique_id}').innerHTML = "Error loading 3D viewer.";
                 return;
             }}
 
-            // Initialize Stage
             var stage = new NGL.Stage("{unique_id}", {{backgroundColor: "white"}});
-            
-            // Decode Base64 CIF
             var cifData = atob("{b64_str}");
             var blob = new Blob([cifData], {{type: 'text/plain'}});
 
-            // Load Structure
             stage.loadFile(blob, {{ext: "cif"}}).then(function (o) {{
-                // Representation 1: Balls and Sticks
-                o.addRepresentation("ball+stick", {{
-                    aspectRatio: 1.5,
-                    radiusScale: 0.3,
-                    bondScale: 0.3
-                }});
                 
-                // Representation 2: Unit Cell Box
-                o.addRepresentation("unitcell", {{
-                    colorValue: "black",
-                    radius: 0.1
+                // --- FIX: VISUALIZATION STYLE ---
+                o.addRepresentation("ball+stick", {{
+                    // Use VDW radii so atoms have correct relative sizes
+                    radiusType: "vdw",  
+                    
+                    // Scale them down slightly (1.0 is full spacefill)
+                    radiusScale: 0.25, 
+                    
+                    // Make bonds 2.5x thinner than the atoms
+                    aspectRatio: 2.5,  
+                    
+                    // High quality rendering
+                    quality: "high"
                 }});
 
-                // Auto-zoom to fit structure
+                // Add Unit Cell Box
+                o.addRepresentation("unitcell", {{
+                    colorValue: "black",
+                    radius: 0.05
+                }});
+
                 o.autoView();
             }});
 
-            // Resize listener
             window.addEventListener("resize", function(event){{
                 stage.handleResize();
             }}, false);
@@ -95,8 +87,6 @@ def visualize_with_ngl(structure, height=400, unique_id="ngl_viewer"):
     </body>
     </html>
     """
-    
-    # Render component (height + 10 padding to avoid scrollbars)
     components.html(html_code, height=height+10, scrolling=False)
 
 # =============================================================================
